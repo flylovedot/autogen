@@ -1,0 +1,265 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// AgentGrpcTests.cs
+
+using System.Collections.Concurrent;
+using System.Text.Json;
+using FluentAssertions;
+//using Google.Protobuf.Reflection;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AutoGen.Contracts;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Xunit;
+using static Microsoft.AutoGen.Core.Grpc.Tests.AgentGrpcTests;
+
+namespace Microsoft.AutoGen.Core.Grpc.Tests;
+
+[Collection(GrpcClusterFixtureCollection.Name)]
+public class AgentGrpcTests(GrpcRuntimeFixture fixture)
+{
+    private readonly GrpcRuntimeFixture _fixture = fixture;
+    // need a variable to store the runtime instance
+    public static WebApplication? Host { get; private set; }
+/* 
+    /// <summary>
+    /// Verify that if the agent is not initialized via AgentWorker, it should throw the correct exception.
+    /// </summary>
+    /// <returns>void</returns>
+    [Fact]
+    public async Task Agent_ShouldThrowException_WhenNotInitialized()
+    {
+        var agent = ActivatorUtilities.CreateInstance<TestAgent>(_fixture.Client.Services);
+        await Assert.ThrowsAsync<UninitializedAgentWorker.AgentInitalizedIncorrectlyException>(
+            async () =>
+            {
+                await agent.SubscribeAsync("TestEvent");
+            }
+        );
+    }
+
+    /// <summary>
+    /// validate that the agent is initialized correctly with implicit subs
+    /// </summary>
+    /// <returns>void</returns>
+    [Fact]
+    public async Task Agent_ShouldInitializeCorrectly()
+    {
+        var (worker, agent) = _fixture.Start();
+        Assert.Equal("GrpcAgentWorker", worker.GetType().Name);
+        var subscriptions = await agent.GetSubscriptionsAsync();
+        Assert.Equal(2, subscriptions.Count);
+        _fixture.Stop();
+    }
+    /// <summary>
+    /// Test SubscribeAsync method
+    /// </summary>
+    /// <returns>void</returns>
+    [Fact]
+    public async Task SubscribeAsync_UnsubscribeAsync_and_GetSubscriptionsTest()
+    {
+        var (_, agent) = _fixture.Start();
+        await agent.SubscribeAsync("TestEvent");
+        await Task.Delay(100);
+        var subscriptions = await agent.GetSubscriptionsAsync().ConfigureAwait(true);
+        var found = false;
+        foreach (var subscription in subscriptions)
+        {
+            if (subscription.TypeSubscription.TopicType == "TestEvent")
+            {
+                found = true;
+            }
+        }
+        Assert.True(found);
+        await agent.UnsubscribeAsync("TestEvent").ConfigureAwait(true);
+        await Task.Delay(500);
+        subscriptions = await agent.GetSubscriptionsAsync().ConfigureAwait(true);
+        found = false;
+        foreach (var subscription in subscriptions)
+        {
+            if (subscription.TypeSubscription.TopicType == "TestEvent")
+            {
+                found = true;
+            }
+        }
+        Assert.False(found);
+        _fixture.Stop();
+    } */
+
+    /// <summary>
+    /// Test StoreAsync and ReadAsync methods
+    /// </summary>
+    /// <returns>void</returns>
+    [Fact]
+    public async Task StoreAsync_and_ReadAsyncTest()
+    {
+        var (_, agent) = _fixture.Start();
+        Dictionary<string, string> state = new()
+        {
+            { "testdata", "Active" }
+        };
+        await agent.StoreAsync(new AgentState
+        {
+            AgentId = agent.AgentId,
+            TextData = JsonSerializer.Serialize(state)
+        }).ConfigureAwait(true);
+        var readState = await agent.ReadAsync<AgentState>(agent.AgentId).ConfigureAwait(true);
+        var read = JsonSerializer.Deserialize<Dictionary<string, string>>(readState.TextData) ?? new Dictionary<string, string> { { "data", "No state data found" } };
+        read.TryGetValue("testdata", out var value);
+        Assert.Equal("Active", value);
+        _fixture.Stop();
+    }
+
+    /// <summary>
+    /// Test PublishMessageAsync method and ReceiveMessage method
+    /// </summary>
+    /// <returns>void</returns>
+    [Fact]
+    public async Task PublishMessageAsync_and_ReceiveMessageTest()
+    {
+        var (_, agent) = _fixture.Start();
+/*         await agent.SubscribeAsync("TestEvent").ConfigureAwait(true);
+        var subscriptions = await agent.GetSubscriptionsAsync().ConfigureAwait(true);
+        var found = false;
+        foreach (var subscription in subscriptions)
+        {
+            if (subscription.TypeSubscription.TopicType == "TestEvent")
+            {
+                found = true;
+            }
+        }
+        Assert.True(found); */
+
+        await agent.PublishMessageAsync(new TextMessage()
+        {
+            Source = "TestEvent",
+            TextMessage_ = "buffer"
+        }).ConfigureAwait(true);
+        await Task.Delay(10000);
+        Assert.True(TestAgent.ReceivedMessages.ContainsKey("TestEvent"));
+        _fixture.Stop();
+    }
+
+/*     [Fact]
+    public async Task InvokeCorrectHandler()
+    {
+        var agent = new TestAgent(new AgentsMetadata(TypeRegistry.Empty, new Dictionary<string, Type>(), new Dictionary<Type, HashSet<string>>(), new Dictionary<Type, HashSet<string>>()), new Logger<Agent>(new LoggerFactory()));
+
+        await agent.HandleObjectAsync("hello world");
+        await agent.HandleObjectAsync(42);
+
+        agent.ReceivedItems.Should().HaveCount(2);
+        agent.ReceivedItems[0].Should().Be("hello world");
+        agent.ReceivedItems[1].Should().Be(42);
+    } */
+
+    [Fact]
+    public async Task DelegateMessageToTestAgentAsync()
+    {
+        var client = _fixture.Client.Services.GetRequiredService<Client>();
+        await client.PublishMessageAsync(new TextMessage()
+        {
+            Source = nameof(DelegateMessageToTestAgentAsync),
+            TextMessage_ = "buffer"
+        }, token: CancellationToken.None);
+
+        // wait for 10 seconds
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        while (!TestAgent.ReceivedMessages.ContainsKey(nameof(DelegateMessageToTestAgentAsync)) && !cts.Token.IsCancellationRequested)
+        {
+            await Task.Delay(100);
+        }
+
+        TestAgent.ReceivedMessages[nameof(DelegateMessageToTestAgentAsync)].Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// The test agent is a simple agent that is used for testing purposes.
+    /// </summary>
+    public class TestAgent(IAgentWorker worker,
+        [FromKeyedServices("EventTypes")] EventTypes eventTypes,
+        Logger<Agent>? logger = null) : Agent(worker, eventTypes, logger), IHandle<TextMessage>
+    {
+        public Task Handle(TextMessage item)
+        {
+            ReceivedMessages[item.Source] = item.TextMessage_;
+            return Task.CompletedTask;
+        }
+        public Task Handle(string item)
+        {
+            ReceivedItems.Add(item);
+            return Task.CompletedTask;
+        }
+        public Task Handle(int item)
+        {
+            ReceivedItems.Add(item);
+            return Task.CompletedTask;
+        }
+        public List<object> ReceivedItems { get; private set; } = [];
+
+        /// <summary>
+        /// Key: source
+        /// Value: message
+        /// </summary>
+        public static ConcurrentDictionary<string, object> ReceivedMessages { get; private set; } = new();
+    }
+}
+
+/// <summary>
+/// GrpcRuntimeFixture - provides a fixture for the agent runtime.
+/// </summary>
+/// <remarks>
+/// This fixture is used to provide a runtime for the agent tests.
+/// However, it is shared between tests. So operations from one test can affect another.
+/// </remarks>
+public sealed class GrpcRuntimeFixture
+{
+    public GrpcRuntimeFixture()
+    {
+        Environment.SetEnvironmentVariable("ASPNETCORE_ENVIRONMENT", "Development");
+        Environment.SetEnvironmentVariable("ASPNETCORE_HTTPS_PORTS", "53071");
+        Environment.SetEnvironmentVariable("AGENT_HOST", "https://localhost:53071");
+        AppHost = StartAppHostAsync().GetAwaiter().GetResult();
+        Environment.SetEnvironmentVariable("ASPNETCORE_URLS", "https://+;http://+");
+        Client = StartClientAsync().GetAwaiter().GetResult();
+    }
+
+    private static async Task<IHost> StartClientAsync()
+    {
+        return await AgentsApp.StartAsync().ConfigureAwait(false);
+    }
+    private static async Task<IHost> StartAppHostAsync()
+    {
+        return await Microsoft.AutoGen.Runtime.Grpc.Host.StartAsync(local: false, useGrpc: true).ConfigureAwait(false);
+
+    }
+    public IHost Client { get; }
+    public IHost? AppHost { get; }
+
+    /// <summary>
+    /// Start - starts the agent
+    /// </summary>
+    /// <returns>IAgentWorker, TestAgent</returns>
+    public (IAgentWorker, TestAgent) Start()
+    {
+        var agent = ActivatorUtilities.CreateInstance<TestAgent>(Client.Services);
+        var worker = Client.Services.GetRequiredService<IAgentWorker>();
+        //Agent.Initialize(worker, agent);
+        return (worker, agent);
+    }
+    /// <summary>
+    /// Stop - stops the agent
+    /// </summary>
+    /// <returns>void</returns>
+    public void Stop()
+    {
+        IHostApplicationLifetime hostApplicationLifetime = Client.Services.GetRequiredService<IHostApplicationLifetime>();
+        hostApplicationLifetime.StopApplication();
+    }
+}
+
+[CollectionDefinition(Name)]
+public sealed class GrpcClusterFixtureCollection : ICollectionFixture<GrpcRuntimeFixture>
+{
+    public const string Name = nameof(GrpcClusterFixtureCollection);
+}
